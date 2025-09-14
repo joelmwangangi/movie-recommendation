@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from sklearn.metrics.pairwise import cosine_similarity
+import numpy as np
 
 # ----------------------------
 # Load Data
@@ -15,12 +15,22 @@ st.title("🎬 Movie Recommender System with Cold Start Simulation")
 # ----------------------------
 user_item_matrix = ratings.pivot_table(
     index="userId", columns="movieId", values="rating"
-).fillna(0)
+).fillna(0).astype(float)
 
-# Compute cosine similarity between movies (item-based)
-similarity = cosine_similarity(user_item_matrix.T)
+# ----------------------------
+# Manual Cosine Similarity
+# ----------------------------
+def cosine_similarity_manual(matrix):
+    norm = np.linalg.norm(matrix, axis=1, keepdims=True)
+    norm_matrix = matrix / (norm + 1e-10)   # avoid division by zero
+    return np.dot(norm_matrix, norm_matrix.T)
+
+# Compute item-item similarity
+similarity_matrix = cosine_similarity_manual(user_item_matrix.T.values)
 similarity_df = pd.DataFrame(
-    similarity, index=user_item_matrix.columns, columns=user_item_matrix.columns
+    similarity_matrix,
+    index=user_item_matrix.columns,
+    columns=user_item_matrix.columns
 )
 
 # ----------------------------
@@ -42,21 +52,19 @@ def cold_start_simulation(new_user_ratings, n=5):
     Simulates a cold start user with only a few ratings.
     new_user_ratings: dict {movieId: rating}
     """
-    # Add the new user to the user-item matrix
-    new_user_df = pd.DataFrame(new_user_ratings, index=[9999])  # dummy user ID
+    # Add dummy new user
+    new_user_df = pd.DataFrame(new_user_ratings, index=[9999])
     temp_matrix = pd.concat([user_item_matrix, new_user_df]).fillna(0)
 
-    # Compute cosine similarity for the new user
-    user_sim = cosine_similarity(temp_matrix)
-    user_sim_df = pd.DataFrame(
-        user_sim, index=temp_matrix.index, columns=temp_matrix.index
-    )
+    # Compute similarity for users
+    sim_matrix = cosine_similarity_manual(temp_matrix.values)
+    sim_df = pd.DataFrame(sim_matrix, index=temp_matrix.index, columns=temp_matrix.index)
 
     # Find most similar existing user
-    sim_scores = user_sim_df.loc[9999].drop(9999)
+    sim_scores = sim_df.loc[9999].drop(9999)
     most_similar_user = sim_scores.idxmax()
 
-    # Recommend based on that user’s top movies
+    # Recommend top movies from that user
     top_movies = ratings[ratings["userId"] == most_similar_user].sort_values(
         "rating", ascending=False
     ).head(n)["movieId"]
