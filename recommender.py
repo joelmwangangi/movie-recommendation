@@ -1,53 +1,92 @@
 import streamlit as st
 import pandas as pd
-from surprise import Dataset, Reader, SVD
-from surprise.model_selection import train_test_split
-from surprise import accuracy
+from sklearn.metrics.pairwise import cosine_similarity
 
-# Load dataset
-st.title("🎬 Movie Recommender System with Multi-Metric Evaluation")
-data = pd.read_csv("ratings.csv")  # MovieLens ratings
+# ----------------------------
+# Load Data
+# ----------------------------
+ratings = pd.read_csv("ratings.csv")
 movies = pd.read_csv("movies.csv")
 
-# Prepare data for Surprise
-reader = Reader(rating_scale=(0.5, 5.0))
-dataset = Dataset.load_from_df(data[['userId', 'movieId', 'rating']], reader)
+st.title("🎬 Movie Recommender System with Cold Start Simulation")
 
-trainset, testset = train_test_split(dataset, test_size=0.2)
+# ----------------------------
+# Create User-Item Matrix
+# ----------------------------
+user_item_matrix = ratings.pivot_table(
+    index="userId", columns="movieId", values="rating"
+).fillna(0)
 
-# Model (Matrix Factorization)
-model = SVD()
-model.fit(trainset)
-predictions = model.test(testset)
+# Compute cosine similarity between movies (item-based)
+similarity = cosine_similarity(user_item_matrix.T)
+similarity_df = pd.DataFrame(
+    similarity, index=user_item_matrix.columns, columns=user_item_matrix.columns
+)
 
-# Evaluate
-rmse = accuracy.rmse(predictions, verbose=False)
-mae = accuracy.mae(predictions, verbose=False)
+# ----------------------------
+# Recommendation Function
+# ----------------------------
+def recommend_movie(movie_id, n=5):
+    if movie_id not in similarity_df.columns:
+        return pd.DataFrame(columns=["title", "genres"])
+    
+    similar_scores = similarity_df[movie_id].sort_values(ascending=False)
+    top_movies = similar_scores.iloc[1:n+1].index  # skip itself
+    return movies[movies["movieId"].isin(top_movies)][["title", "genres"]]
 
-st.write(f"Model Evaluation:")
-st.write(f"- RMSE: {rmse:.3f}")
-st.write(f"- MAE: {mae:.3f}")
+# ----------------------------
+# Cold Start Simulation
+# ----------------------------
+def cold_start_simulation(new_user_ratings, n=5):
+    """
+    Simulates a cold start user with only a few ratings.
+    new_user_ratings: dict {movieId: rating}
+    """
+    # Add the new user to the user-item matrix
+    new_user_df = pd.DataFrame(new_user_ratings, index=[9999])  # dummy user ID
+    temp_matrix = pd.concat([user_item_matrix, new_user_df]).fillna(0)
 
-# Recommend movies for a user
-st.subheader("Get Recommendations")
-user_id = st.number_input("Enter User ID:", min_value=1, max_value=data['userId'].max(), step=1)
+    # Compute cosine similarity for the new user
+    user_sim = cosine_similarity(temp_matrix)
+    user_sim_df = pd.DataFrame(
+        user_sim, index=temp_matrix.index, columns=temp_matrix.index
+    )
 
-def get_top_n(predictions, n=5):
-    top_n = {}
-    for uid, iid, true_r, est, _ in predictions:
-        top_n.setdefault(uid, [])
-        top_n[uid].append((iid, est))
-    for uid, user_ratings in top_n.items():
-        user_ratings.sort(key=lambda x: x[1], reverse=True)
-        top_n[uid] = user_ratings[:n]
-    return top_n
+    # Find most similar existing user
+    sim_scores = user_sim_df.loc[9999].drop(9999)
+    most_similar_user = sim_scores.idxmax()
 
-top_n = get_top_n(predictions, n=5)
+    # Recommend based on that user’s top movies
+    top_movies = ratings[ratings["userId"] == most_similar_user].sort_values(
+        "rating", ascending=False
+    ).head(n)["movieId"]
+    
+    return movies[movies["movieId"].isin(top_movies)][["title", "genres"]]
 
-if user_id in top_n:
-    st.write("Top 5 Recommended Movies:")
-    for movie_id, rating in top_n[user_id]:
-        title = movies[movies['movieId'] == movie_id]['title'].values[0]
-        st.write(f"- {title} (Predicted Rating: {rating:.2f})")
-else:
-    st.write("No recommendations available for this user (cold start).")
+# ----------------------------
+# Streamlit UI
+# ----------------------------
+st.subheader("🔹 Standard Recommendation (Item-based)")
+selected_movie = st.selectbox("Pick a movie you like:", movies["title"])
+movie_id = movies[movies["title"] == selected_movie]["movieId"].values[0]
+
+st.write("Because you liked:", selected_movie)
+st.write("We recommend:")
+st.table(recommend_movie(movie_id))
+
+st.subheader("🔹 Cold Start Simulation (New User)")
+st.write("Simulating a new user with very few ratings...")
+
+# Example: new user rates Toy Story = 5, Jumanji = 2
+new_user_ratings = {1: 5, 2: 2}
+st.json(new_user_ratings)
+
+st.write("Recommendations for this new user:")
+st.table(cold_start_simulation(new_user_ratings))
+
+st.subheader("📊 Future Extensions")
+st.markdown("""
+- Add Precision@K, Recall@K, RMSE for accuracy  
+- Compute diversity, novelty, serendipity, fairness, coverage  
+- Visualize results with charts
+""")
